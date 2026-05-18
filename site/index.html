@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>BBS Research Projects</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --bg:#fafafa; --fg:#222; --muted:#666; --brand:#374785; --line:#e3e3e3; }
+  body { font: 15px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; color:var(--fg); background:var(--bg); margin:0; padding:24px; max-width:1100px; margin-inline:auto; }
+  h1 { margin:0 0 4px; color:var(--brand); }
+  h1 small { font-size:0.55em; color:var(--muted); font-weight:normal; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:16px 0; }
+  .controls input, .controls select, .controls textarea {
+    font: inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px;
+  }
+  .controls textarea { flex:1; min-width:300px; font-family:ui-monospace,monospace; font-size:13px; }
+  .controls button { padding:6px 12px; border:1px solid var(--brand); background:var(--brand); color:white; border-radius:6px; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; background:white; }
+  th, td { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { background:#eef0f7; position:sticky; top:0; }
+  tr:hover td { background:#fafbff; }
+  .muted { color:var(--muted); }
+  .pill { display:inline-block; padding:1px 8px; margin:1px 2px 1px 0; background:#e9ecf8; color:var(--brand); border-radius:99px; font-size:12px; }
+  .err { color:#a3261b; }
+  footer { margin-top:32px; color:var(--muted); font-size:12px; }
+  details { margin-top:8px; }
+  pre { background:#f4f4f8; padding:10px; border-radius:6px; overflow:auto; }
+</style>
+</head>
+<body>
+
+<h1>Balanced Blended Space &middot; Project Database
+  <small>live SQLite, queried in your browser</small></h1>
+
+<p class="muted">
+  This page loads <code>balanced_blended_space.db</code> with
+  <a href="https://sql.js.org/">sql.js</a> and runs queries client-side.
+  Updates come from researcher form submissions hourly via GitHub Actions.
+</p>
+
+<div class="controls">
+  <label>Department
+    <select id="filter-dept"><option value="">(all)</option></select>
+  </label>
+  <label>Tag
+    <select id="filter-tag"><option value="">(all)</option></select>
+  </label>
+  <label>Search
+    <input id="filter-q" type="search" placeholder="title contains..." />
+  </label>
+  <button id="apply">Apply</button>
+  <a href="projects.csv" download style="margin-left:auto;">Download CSV</a>
+  <a href="balanced_blended_space.db" download>Download .db</a>
+</div>
+
+<div id="status" class="muted">Loading database&hellip;</div>
+<div id="results"></div>
+
+<details>
+  <summary>Custom SQL (read-only)</summary>
+  <div class="controls">
+    <textarea id="sql" rows="3">SELECT title, departments FROM v_cross_department_projects ORDER BY department_count DESC LIMIT 25;</textarea>
+    <button id="run-sql">Run</button>
+  </div>
+  <div id="sql-output"></div>
+</details>
+
+<footer>
+  Source repo &middot; questions? Contact your project lead.
+</footer>
+
+<script src="https://sql.js.org/dist/sql-wasm.js"></script>
+<script>
+const statusEl = document.getElementById('status');
+let db = null;
+
+async function init() {
+  const SQL = await initSqlJs({ locateFile: f => `https://sql.js.org/dist/${f}` });
+  const res = await fetch('balanced_blended_space.db');
+  const buf = new Uint8Array(await res.arrayBuffer());
+  db = new SQL.Database(buf);
+
+  fillSelect('filter-dept', 'SELECT name FROM departments ORDER BY name');
+  fillSelect('filter-tag',  'SELECT name FROM tags ORDER BY name');
+  document.getElementById('apply').onclick = render;
+  document.getElementById('run-sql').onclick = runSql;
+  statusEl.textContent = 'Ready.';
+  render();
+}
+
+function fillSelect(id, sql) {
+  const sel = document.getElementById(id);
+  for (const r of db.exec(sql)[0]?.values || []) {
+    const opt = document.createElement('option');
+    opt.value = r[0]; opt.textContent = r[0];
+    sel.appendChild(opt);
+  }
+}
+
+function escape(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function render() {
+  const dept = document.getElementById('filter-dept').value;
+  const tag  = document.getElementById('filter-tag').value;
+  const q    = document.getElementById('filter-q').value.trim();
+
+  let sql = `SELECT DISTINCT p.project_id, p.title, p.summary, p.semester,
+                    (SELECT name FROM statuses WHERE status_id=p.status_id) status,
+                    (SELECT GROUP_CONCAT(d.name, '; ')
+                       FROM project_departments pd JOIN departments d USING(department_id)
+                       WHERE pd.project_id=p.project_id) depts,
+                    (SELECT GROUP_CONCAT(t.name, ', ')
+                       FROM project_tags pt JOIN tags t USING(tag_id)
+                       WHERE pt.project_id=p.project_id) tags
+             FROM projects p
+             LEFT JOIN project_departments pd ON pd.project_id=p.project_id
+             LEFT JOIN departments d ON d.department_id=pd.department_id
+             LEFT JOIN project_tags pt ON pt.project_id=p.project_id
+             LEFT JOIN tags t ON t.tag_id=pt.tag_id
+             WHERE 1=1 `;
+  const args = [];
+  if (dept) { sql += ' AND d.name = ? '; args.push(dept); }
+  if (tag)  { sql += ' AND t.name = ? '; args.push(tag); }
+  if (q)    { sql += ' AND p.title LIKE ? '; args.push('%'+q+'%'); }
+  sql += ' ORDER BY p.title LIMIT 500';
+
+  const stmt = db.prepare(sql);
+  stmt.bind(args);
+  const rows = [];
+  while (stmt.step()) rows.push(stmt.getAsObject());
+  stmt.free();
+
+  const out = document.getElementById('results');
+  if (!rows.length) { out.innerHTML = '<p class="muted">No matches.</p>'; return; }
+
+  let html = `<p class="muted">${rows.length} project(s)</p>
+    <table><thead><tr>
+      <th>#</th><th>Title</th><th>Departments</th><th>Tags</th><th>Status</th><th>Semester</th>
+    </tr></thead><tbody>`;
+  for (const r of rows) {
+    html += `<tr>
+      <td class="muted">${r.project_id}</td>
+      <td><strong>${escape(r.title)}</strong>${r.summary ? '<br><span class="muted">'+escape(r.summary)+'</span>' : ''}</td>
+      <td>${(r.depts || '').split(';').filter(Boolean).map(s => '<span class="pill">'+escape(s.trim())+'</span>').join('')}</td>
+      <td>${(r.tags  || '').split(',').filter(Boolean).map(s => '<span class="pill">'+escape(s.trim())+'</span>').join('')}</td>
+      <td>${escape(r.status||'')}</td>
+      <td>${escape(r.semester||'')}</td>
+    </tr>`;
+  }
+  html += '</tbody></table>';
+  out.innerHTML = html;
+}
+
+function runSql() {
+  const sql = document.getElementById('sql').value;
+  const out = document.getElementById('sql-output');
+  try {
+    if (!/^\s*select/i.test(sql)) throw new Error('Only SELECT queries are allowed.');
+    const res = db.exec(sql);
+    if (!res.length) { out.innerHTML = '<p class="muted">No rows.</p>'; return; }
+    const cols = res[0].columns, rows = res[0].values;
+    let html = '<table><thead><tr>' + cols.map(c=>'<th>'+escape(c)+'</th>').join('') + '</tr></thead><tbody>';
+    for (const row of rows) html += '<tr>' + row.map(c=>'<td>'+escape(c)+'</td>').join('') + '</tr>';
+    html += '</tbody></table>';
+    out.innerHTML = html;
+  } catch (e) {
+    out.innerHTML = '<p class="err">' + escape(e.message) + '</p>';
+  }
+}
+
+init().catch(err => { statusEl.innerHTML = '<span class="err">'+escape(err.message)+'</span>'; });
+</script>
+</body>
+</html>

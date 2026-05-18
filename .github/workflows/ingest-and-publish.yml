@@ -1,0 +1,95 @@
+name: Ingest submissions and publish
+
+on:
+  schedule:
+    - cron: '15 * * * *'        # every hour at :15
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write                # to commit the updated DB
+  pages: write                   # to publish to GitHub Pages
+  id-token: write                # for actions/deploy-pages
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Rebuild base DB from schema + seed
+        run: python3 scripts/build_db.py
+
+      - name: Apply pipeline schema (staging tables)
+        run: |
+          python3 - <<'PY'
+          import sqlite3
+          con = sqlite3.connect("balanced_blended_space.db")
+          con.executescript(open("sql/pipeline_schema.sql").read())
+          con.commit(); con.close()
+          PY
+
+      - name: Ingest new submissions from Google Sheet
+        if: env.BBS_SHEET_CSV_URL != ''
+        env:
+          BBS_SHEET_CSV_URL: ${{ secrets.BBS_SHEET_CSV_URL }}
+        run: python3 pipeline/ingest.py
+
+      - name: Auto-approve cleanly validated submissions (optional)
+        if: env.BBS_AUTO_APPROVE == 'true'
+        env:
+          BBS_AUTO_APPROVE: ${{ vars.BBS_AUTO_APPROVE }}
+        run: |
+          python3 - <<'PY'
+          import sqlite3, subprocess
+          con = sqlite3.connect("balanced_blended_space.db")
+          con.row_factory = sqlite3.Row
+          rows = con.execute("""
+              SELECT submission_id FROM pending_submissions
+              WHERE review_status='pending' AND validation_errors IS NULL
+          """).fetchall()
+          con.close()
+          for r in rows:
+              subprocess.check_call(["python3", "pipeline/review.py", "approve",
+                                     str(r["submission_id"]),
+                                     "--reviewer", "github-actions",
+                                     "--notes", "auto-approved (clean validation)"])
+          PY
+
+      - name: Build static site for GitHub Pages
+        run: python3 site/build_site.py
+
+      - name: Commit DB changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add balanced_blended_space.db site/dist/ || true
+          if ! git diff --cached --quiet; then
+            git commit -m "auto: ingest + rebuild $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          else
+            echo "(nothing to commit)"
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

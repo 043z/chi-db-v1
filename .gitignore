@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+export/
+*.db-journal
+site/dist/
+.DS_Store
+# uncomment to keep the database out of git
+# balanced_blended_space.db

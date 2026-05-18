@@ -1,0 +1,47 @@
+name: Scan repo READMEs for project candidates
+
+on:
+  schedule:
+    - cron: '45 6 * * *'        # 06:45 UTC daily, after the github sync
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Rebuild DB (schema + seeds + pipeline + github)
+        run: python3 scripts/build_db.py
+
+      - name: Refresh github_repos from the live org first
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BBS_GITHUB_ORG: CHI-CityTech
+        run: python3 scripts/sync_github.py
+
+      - name: Scan inside each repo for project candidates
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/scan_repos.py
+
+      - name: Rebuild static site
+        run: python3 site/build_site.py
+
+      - name: Commit DB + site changes
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add balanced_blended_space.db site/dist/ || true
+          if ! git diff --cached --quiet; then
+            git commit -m "auto: repo scan $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          else
+            echo "(no changes)"
+          fi
