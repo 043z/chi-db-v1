@@ -32,7 +32,9 @@ balanced-blended-space-db/
 │   ├── build_site.py                # writes ./site/dist for GitHub Pages
 │   └── index.html                   # sql.js browser-side query page
 ├── .github/workflows/
-│   └── ingest-and-publish.yml       # hourly ingest + Pages deploy
+│   ├── ingest-and-publish.yml       # hourly: ingest submissions + Pages deploy
+│   ├── sync-github.yml              # daily 05:30 UTC: refresh CHI-CityTech repo metadata
+│   └── scan-repos.yml               # daily 06:45 UTC: scan repo READMEs for project candidates
 └── docs/
     └── er-diagram.md                # Mermaid ER diagram
 ```
