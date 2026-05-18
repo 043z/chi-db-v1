@@ -41,6 +41,7 @@ import sqlite3
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Iterable
@@ -143,7 +144,8 @@ def fetch_docs_listing(full_name: str) -> list[dict]:
 
 def fetch_file(full_name: str, path: str) -> str:
     try:
-        data = _gh_request(f"{GITHUB_API}/repos/{full_name}/contents/{path}")
+        path_encoded = urllib.parse.quote(path, safe='/')
+        data = _gh_request(f"{GITHUB_API}/repos/{full_name}/contents/{path_encoded}")
     except urllib.error.HTTPError as e:
         if e.code in (403, 404):
             return ""
